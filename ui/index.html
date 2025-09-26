@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outlook Mail Filter Results</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+            padding-top: 20px;
+            padding-bottom: 40px;
+        }
+        .header {
+            background-color: #0078d4;
+            color: white;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .email-card {
+            transition: transform 0.2s;
+            margin-bottom: 20px;
+            height: 100%;
+        }
+        .email-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            background-color: #f0f8ff;
+            font-weight: bold;
+        }
+        .keyword-highlight {
+            background-color: #fff4b5;
+            padding: 0 2px;
+        }
+        .preview {
+            max-height: 100px;
+            overflow: hidden;
+        }
+        .sender {
+            color: #666;
+            font-size: 0.9rem;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 0.8rem;
+        }
+        .loading {
+            text-align: center;
+            padding: 50px;
+        }
+        .refresh-btn {
+            margin-left: 10px;
+        }
+        #error-container {
+            display: none;
+            margin-bottom: 20px;
+        }
+        .settings-panel {
+            background-color: white;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-check {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header d-flex justify-content-between align-items-center">
+            <h1>Outlook Mail Filter Results</h1>
+            <div>
+                <button id="settings-toggle" class="btn btn-light">⚙️ Settings</button>
+                <button id="refresh-btn" class="btn btn-success refresh-btn">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+                <span id="api-status" class="badge bg-secondary ms-2">API: Checking...</span>
+            </div>
+        </div>
+
+        <div id="settings-panel" class="settings-panel" style="display: none;">
+            <h4>Search Settings</h4>
+            <form id="settings-form">
+                <div class="mb-3">
+                    <label for="sender-filter" class="form-label">Sender Filter</label>
+                    <input type="text" class="form-control" id="sender-filter" placeholder="e.g., FASTRAPP@paypal.com">
+                </div>
+                <div class="mb-3">
+                    <label for="keyword" class="form-label">Keyword</label>
+                    <input type="text" class="form-control" id="keyword" placeholder="e.g., failed">
+                </div>
+                <div class="mb-3">
+                    <label for="max-items" class="form-label">Max Items</label>
+                    <input type="number" class="form-control" id="max-items" min="1" max="100" value="25">
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="use-rapp-fast" checked>
+                    <label class="form-check-label" for="use-rapp-fast">
+                        Search in RAPP, FAST folder (instead of inbox)
+                    </label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="case-sensitive">
+                    <label class="form-check-label" for="case-sensitive">
+                        Case-sensitive search
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">Apply Settings</button>
+            </form>
+        </div>
+
+        <div id="error-container" class="alert alert-danger" role="alert"></div>
+
+        <div id="info-panel" class="alert alert-info">
+            Loading...
+        </div>
+
+        <div id="summary" class="alert alert-primary">
+            Loading results...
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p>Loading email results...</p>
+        </div>
+
+        <div id="no-results" style="display: none;" class="alert alert-warning">
+            <h4>No matching emails found</h4>
+            <p>No emails were found matching your search criteria.</p>
+            <p>Try checking different search criteria or using the RAPP, FAST folder if you're not already doing so.</p>
+        </div>
+
+        <div id="results-container" class="row" style="display: none;"></div>
+    </div>
+
+    <!-- Email card template -->
+    <template id="email-card-template">
+        <div class="col-md-6 col-lg-4">
+            <div class="card email-card">
+                <div class="card-header">
+                    <span class="subject"></span>
+                </div>
+                <div class="card-body">
+                    <div class="sender mb-2"></div>
+                    <div class="timestamp mb-2"></div>
+                    <p class="preview card-text"></p>
+                    <a href="#" class="outlook-link btn btn-primary btn-sm" target="_blank">Open in Outlook</a>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        // Configuration
+        let config = {
+            useRappFast: true,
+            senderFilter: "FASTRAPP@paypal.com",
+            keyword: "failed",
+            maxItems: 25,
+            caseSensitive: false
+        };
+
+        // DOM elements
+        const resultsContainer = document.getElementById('results-container');
+        const noResultsElement = document.getElementById('no-results');
+        const loadingElement = document.getElementById('loading');
+        const infoPanel = document.getElementById('info-panel');
+        const summaryElement = document.getElementById('summary');
+        const errorContainer = document.getElementById('error-container');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const settingsToggle = document.getElementById('settings-toggle');
+        const settingsPanel = document.getElementById('settings-panel');
+        const settingsForm = document.getElementById('settings-form');
+
+        // Email card template
+        const emailCardTemplate = document.getElementById('email-card-template');
+
+        // Toggle settings panel
+        settingsToggle.addEventListener('click', () => {
+            settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Initialize settings form with current config
+        function initSettingsForm() {
+            document.getElementById('sender-filter').value = config.senderFilter;
+            document.getElementById('keyword').value = config.keyword;
+            document.getElementById('max-items').value = config.maxItems;
+            document.getElementById('use-rapp-fast').checked = config.useRappFast;
+            document.getElementById('case-sensitive').checked = config.caseSensitive;
+        }
+
+        // Apply settings from form
+        settingsForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            
+            config = {
+                senderFilter: document.getElementById('sender-filter').value,
+                keyword: document.getElementById('keyword').value,
+                maxItems: parseInt(document.getElementById('max-items').value, 10),
+                useRappFast: document.getElementById('use-rapp-fast').checked,
+                caseSensitive: document.getElementById('case-sensitive').checked
+            };
+
+            // Save settings to localStorage
+            localStorage.setItem('mailFilterConfig', JSON.stringify(config));
+            
+            // Refresh results with new settings
+            settingsPanel.style.display = 'none';
+            loadResults();
+        });
+
+        // Load settings from localStorage
+        function loadSavedSettings() {
+            const savedConfig = localStorage.getItem('mailFilterConfig');
+            if (savedConfig) {
+                try {
+                    config = JSON.parse(savedConfig);
+                    initSettingsForm();
+                } catch (e) {
+                    console.error('Error loading saved settings:', e);
+                }
+            } else {
+                initSettingsForm();
+            }
+        }
+
+        // Highlight keyword in text
+        function highlightKeyword(text, keyword) {
+            if (!keyword || !text) return text;
+            
+            const regex = config.caseSensitive 
+                ? new RegExp(`(${keyword})`, 'g')
+                : new RegExp(`(${keyword})`, 'gi');
+                
+            return text.replace(regex, '<span class="keyword-highlight">$1</span>');
+        }
+
+        // Format date
+        function formatDate(dateString) {
+            try {
+                const date = new Date(dateString);
+                return new Intl.DateTimeFormat('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: 'numeric',
+                    minute: 'numeric',
+                    second: 'numeric'
+                }).format(date);
+            } catch (e) {
+                return dateString;
+            }
+        }
+
+        // Clean preview text
+        function cleanPreview(text, maxLength = 150) {
+            if (!text) return 'No preview available';
+            
+            // Remove HTML tags
+            let cleaned = text.replace(/<[^>]+>/g, '');
+            
+            // Remove extra whitespace
+            cleaned = cleaned.replace(/\s+/g, ' ').trim();
+            
+            // Truncate if too long
+            if (cleaned.length > maxLength) {
+                return cleaned.substring(0, maxLength) + '...';
+            }
+            
+            return cleaned;
+        }
+
+        // Generate Outlook link
+        function getOutlookLink(messageId, folderId) {
+            // Format the IDs correctly - remove any special characters if needed
+            const cleanMessageId = encodeURIComponent(messageId);
+            
+            if (folderId) {
+                const cleanFolderId = encodeURIComponent(folderId);
+                return `https://outlook.office365.com/mail/deeplink/readmessage?itemid=${cleanMessageId}&folderid=${cleanFolderId}`;
+            } else {
+                return `https://outlook.office365.com/mail/deeplink/readmessage?itemid=${cleanMessageId}`;
+            }
+        }
+        
+        // Add error tracking and reporting
+        function trackError(error, context) {
+            console.error(`Error in ${context}:`, error);
+            // In production, you might want to send this to a monitoring service
+            // Example: sendToMonitoring(error, context);
+        }
+
+        // Create email card
+        function createEmailCard(message, folderId, keyword) {
+            const template = emailCardTemplate.content.cloneNode(true);
+            
+            // Set subject with highlighted keyword
+            const subject = message.subject || 'No subject';
+            template.querySelector('.subject').innerHTML = highlightKeyword(subject, keyword);
+            
+            // Set sender
+            let sender = 'Unknown sender';
+            if (message.from && message.from.emailAddress) {
+                sender = message.from.emailAddress.address || 'Unknown sender';
+            }
+            template.querySelector('.sender').textContent = `From: ${sender}`;
+            
+            // Set timestamp
+            const timestamp = formatDate(message.receivedDateTime);
+            template.querySelector('.timestamp').textContent = `Received: ${timestamp}`;
+            
+            // Set preview with highlighted keyword
+            const preview = cleanPreview(message.bodyPreview);
+            template.querySelector('.preview').innerHTML = highlightKeyword(preview, keyword);
+            
+            // Set Outlook link
+            const outlookLink = getOutlookLink(message.id, folderId);
+            template.querySelector('.outlook-link').href = outlookLink;
+            
+            return template;
+        }
+
+        // Display results
+        function displayResults(data) {
+            // Clear previous results
+            resultsContainer.innerHTML = '';
+            
+            // Hide loading indicator
+            loadingElement.style.display = 'none';
+            
+            if (!data || !data.messages || data.messages.length === 0) {
+                // Show no results message
+                noResultsElement.style.display = 'block';
+                resultsContainer.style.display = 'none';
+                summaryElement.textContent = 'No matching emails found.';
+                return;
+            }
+            
+            // Show results
+            noResultsElement.style.display = 'none';
+            resultsContainer.style.display = 'flex';
+            
+            // Update info panel
+            const folderName = data.folder_name || 'unknown folder';
+            infoPanel.textContent = `Source: ${folderName} | Sender: ${data.sender_filter} | Keyword: ${data.keyword}`;
+            
+            // Update summary
+            summaryElement.textContent = `Found ${data.messages.length} matching emails. Last updated: ${new Date().toLocaleString()}`;
+            
+            // Add email cards
+            data.messages.forEach(message => {
+                const card = createEmailCard(message, data.folder_id, data.keyword);
+                resultsContainer.appendChild(card);
+            });
+        }
+
+        // API configuration
+        const API_CONFIG = {
+            // Change this to your production API URL when deploying
+            baseUrl: 'http://localhost:8000/api',
+            timeoutMs: 30000,  // 30 seconds timeout
+            checkInterval: 60000, // Check API status every minute
+            useMockData: true  // Set to true to use mock data instead of real API
+        };
+        
+        // API status indicator
+        const apiStatus = document.getElementById('api-status');
+        
+        // Check API status
+        async function checkApiStatus() {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000); // Short timeout for status check
+                
+                const response = await fetch(`${API_CONFIG.baseUrl}/health`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    },
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    apiStatus.textContent = `API: Connected`;
+                    apiStatus.className = 'badge bg-success ms-2';
+                    return true;
+                } else {
+                    throw new Error(`Status: ${response.status}`);
+                }
+            } catch (error) {
+                apiStatus.textContent = `API: Disconnected`;
+                apiStatus.className = 'badge bg-danger ms-2';
+                console.error('API status check failed:', error);
+                return false;
+            }
+        }
+        
+        // Load results from the API server
+        async function loadResults() {
+            // Show loading indicator
+            loadingElement.style.display = 'block';
+            resultsContainer.style.display = 'none';
+            noResultsElement.style.display = 'none';
+            errorContainer.style.display = 'none';
+            
+            try {
+                // Build query parameters
+                const params = new URLSearchParams();
+                
+                params.append('use_rapp_fast', config.useRappFast);
+                
+                if (config.senderFilter) {
+                    params.append('sender', config.senderFilter);
+                }
+                
+                if (config.keyword) {
+                    params.append('keyword', config.keyword);
+                }
+                
+                if (config.maxItems) {
+                    params.append('max_items', config.maxItems);
+                }
+                
+                if (config.caseSensitive) {
+                    params.append('case_sensitive', config.caseSensitive);
+                }
+                
+                // Log request for debugging
+                console.log(`Fetching from: ${API_CONFIG.baseUrl}/emails?${params}`);
+                
+                // Fetch data from API with timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeoutMs);
+                
+                const response = await fetch(`${API_CONFIG.baseUrl}/emails?${params}${API_CONFIG.useMockData ? '&mock_data=true' : ''}`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    },
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                // Check if response is OK
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `API request failed with status ${response.status}`);
+                }
+                
+                // Parse JSON response
+                const data = await response.json();
+                
+                // Display the results
+                displayResults(data);
+                
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                
+                // Show error message
+                errorContainer.textContent = `Error: ${error.message || 'Failed to fetch data from server'}`;
+                errorContainer.style.display = 'block';
+                loadingElement.style.display = 'none';
+                
+                // If the API server is not running, fall back to mock data for demonstration
+                if (error.name === 'AbortError' || error.message.includes('Failed to fetch')) {
+                    console.log('API server not available, falling back to mock data');
+                    errorContainer.textContent += ' (Falling back to mock data for demonstration)';
+                    setTimeout(() => {
+                        // Use the existing mock data function
+                        const mockData = {
+                            folder_name: config.useRappFast ? "RAPP, FAST folder" : "inbox",
+                            folder_id: config.useRappFast ? "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwAuAAAAAACIUSZgTKHvRJHa8Gd7q0_IAQDbsGSnx95eRJU3aetDZ6MzAAAzty-9AAA=" : null,
+                            sender_filter: config.senderFilter,
+                            keyword: config.keyword,
+                            total_messages: 3,
+                            messages: [
+                                {
+                                    id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3dAAA=",
+                                    subject: `Deployment failed: Feature Studio Pipeline #12345`,
+                                    bodyPreview: `The deployment to production has failed due to the following errors: - Connection timeout - Database migration failed - Configuration validation failed`,
+                                    receivedDateTime: "2025-09-24T08:15:32Z",
+                                    from: {
+                                        emailAddress: {
+                                            address: config.senderFilter || "FASTRAPP@paypal.com",
+                                            name: "Feature Studio Notifications"
+                                        }
+                                    }
+                                }
+                            ]
+                        };
+                        displayResults(mockData);
+                    }, 1000);
+                }
+            }
+        }
+
+        // Expanded mock data collection with 20 emails
+        const mockEmails = [
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3dAAA=",
+                subject: `Deployment failed: Feature Studio Pipeline #12345`,
+                bodyPreview: `The deployment to production has failed due to the following errors: - Connection timeout - Database migration failed - Configuration validation failed`,
+                receivedDateTime: "2025-09-24T08:15:32Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3eAAA=",
+                subject: `Build failed: Feature Studio PR #5678`,
+                bodyPreview: `The build for PR #5678 has failed. Please check the following issues: - Unit test failures in PaymentModule - Integration tests timeout - Code style violations`,
+                receivedDateTime: "2025-09-23T14:22:45Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3fAAA=",
+                subject: `Test suite failed: Feature Studio Daily Run`,
+                bodyPreview: `The daily test suite run has failed with 15 test failures. Critical paths affected: - Checkout flow - User authentication - Payment processing Please check the test report for details.`,
+                receivedDateTime: "2025-09-22T23:05:11Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3gAAA=",
+                subject: `Error in Feature Studio: Database Migration`,
+                bodyPreview: `Database migration script failed with error code 1603. Tables affected: USER_PROFILES, TRANSACTION_HISTORY. This error requires immediate attention as it may affect production services.`,
+                receivedDateTime: "2025-09-21T10:08:45Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3hAAA=",
+                subject: `Security scan completed: 2 critical issues found`,
+                bodyPreview: `The weekly security scan completed with 2 critical issues that require immediate attention. Issues: - Outdated dependency with known CVE - Potential SQL injection vulnerability in search function`,
+                receivedDateTime: "2025-09-20T18:34:12Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3iAAA=",
+                subject: `Feature validation failed: Payment Module`,
+                bodyPreview: `The feature validation for Payment Module failed in staging environment. Issues found: - Payment gateway timeout - Incorrect currency conversion - Missing transaction logs`,
+                receivedDateTime: "2025-09-19T09:12:54Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3jAAA=",
+                subject: `Continuous integration error: Branch merge failed`,
+                bodyPreview: `The automatic merge of feature/payment-redesign into develop branch has failed. Merge conflicts detected in: - PaymentProcessor.java - TransactionService.js - CheckoutController.cs`,
+                receivedDateTime: "2025-09-18T15:45:23Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3kAAA=",
+                subject: `API Gateway error report: 503 Service Unavailable`,
+                bodyPreview: `There were 234 instances of 503 Service Unavailable errors from the API Gateway in the past hour. Affected services: - Payment Processing API - User Authentication Service - Transaction History API`,
+                receivedDateTime: "2025-09-17T23:18:09Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3lAAA=",
+                subject: `Performance regression detected in latest build`,
+                bodyPreview: `Performance tests detected a 35% increase in response time for the checkout flow. Changes that may have caused this regression: - New payment validation logic - Updated database queries - Third-party API integration`,
+                receivedDateTime: "2025-09-16T11:42:56Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3mAAA=",
+                subject: `Critical error in production: Payment processing`,
+                bodyPreview: `A critical error has been detected in the production payment processing system. Error rate: 12% of transactions. Error message: "Unable to connect to payment gateway: Connection refused"`,
+                receivedDateTime: "2025-09-15T08:23:15Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3nAAA=",
+                subject: `Feature Studio: Weekly status report`,
+                bodyPreview: `Weekly status report for Feature Studio: 12 features deployed, 3 features delayed, 5 bugs fixed. Key metrics: - System uptime: 99.92% - Average response time: 245ms - Error rate: 0.08%`,
+                receivedDateTime: "2025-09-14T16:00:00Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3oAAA=",
+                subject: `Deployment completed successfully: Feature Studio v2.4.5`,
+                bodyPreview: `Deployment of Feature Studio v2.4.5 completed successfully. Deployment time: 12 minutes. New features: - Enhanced payment processing - Improved error handling - Updated third-party integrations`,
+                receivedDateTime: "2025-09-13T14:12:37Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3pAAA=",
+                subject: `Database backup failed: Timeout error`,
+                bodyPreview: `The scheduled database backup operation failed with a timeout error. Details: - Database: Production Transactions - Error: Operation timed out after 60 minutes - Last successful backup: 2025-09-11`,
+                receivedDateTime: "2025-09-12T03:45:12Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3qAAA=",
+                subject: `Error threshold exceeded: Payment authentication service`,
+                bodyPreview: `The payment authentication service has exceeded the error threshold (5%). Current error rate: 7.3%. Most common error: "Authentication timeout". This issue may affect user ability to complete purchases.`,
+                receivedDateTime: "2025-09-11T19:28:54Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3rAAA=",
+                subject: `Feature request review: Payment method enhancement`,
+                bodyPreview: `The feature request for 'Payment Method Enhancement' has been reviewed by the product team. Status: Approved for development. Priority: High. Estimated delivery: Q4 2025.`,
+                receivedDateTime: "2025-09-10T10:15:32Z",
+                from: {
+                    emailAddress: {
+                        address: "ProductTeam@paypal.com",
+                        name: "PayPal Product Team"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3sAAA=",
+                subject: `Integration test failures: Partner API`,
+                bodyPreview: `Integration tests for the Partner API have failed in the staging environment. Tests failed: 8/42. Areas affected: - Authentication - Data retrieval - Transaction processing`,
+                receivedDateTime: "2025-09-09T14:37:23Z",
+                from: {
+                    emailAddress: {
+                        address: "FASTRAPP@paypal.com",
+                        name: "Feature Studio Notifications"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3tAAA=",
+                subject: `System load alert: CPU usage exceeds 85%`,
+                bodyPreview: `System monitoring has detected high CPU usage on production servers. Average CPU: 87% over 30 minutes. Affected services: - Transaction processing - Reporting - User authentication`,
+                receivedDateTime: "2025-09-08T21:05:48Z",
+                from: {
+                    emailAddress: {
+                        address: "monitoring@paypal.com",
+                        name: "PayPal System Monitoring"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3uAAA=",
+                subject: `Failed login attempts exceeding threshold`,
+                bodyPreview: `Security alert: Failed login attempts are exceeding normal thresholds. Current rate: 342/hour (normal: <100/hour). Possible causes: - Credential stuffing attack - Misconfigured client application - Service disruption`,
+                receivedDateTime: "2025-09-07T04:12:33Z",
+                from: {
+                    emailAddress: {
+                        address: "security@paypal.com",
+                        name: "PayPal Security Team"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3vAAA=",
+                subject: `API rate limiting triggered for client application`,
+                bodyPreview: `Rate limiting has been triggered for client application 'Merchant Dashboard'. Current rate: 520 requests/minute (limit: 500/minute). This may impact user experience for merchants using the dashboard.`,
+                receivedDateTime: "2025-09-06T17:42:15Z",
+                from: {
+                    emailAddress: {
+                        address: "api-support@paypal.com",
+                        name: "PayPal API Support"
+                    }
+                }
+            },
+            {
+                id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3wAAA=",
+                subject: `Certificate expiration warning: api.payments.paypal.com`,
+                bodyPreview: `SSL certificate for api.payments.paypal.com will expire in 15 days. Expiration date: 2025-10-10. This requires immediate attention to prevent service disruption.`,
+                receivedDateTime: "2025-09-05T09:30:00Z",
+                from: {
+                    emailAddress: {
+                        address: "certificates@paypal.com",
+                        name: "PayPal Certificate Management"
+                    }
+                }
+            }
+        ];
+
+        // Mock implementation for demonstration with dynamic filtering
+        function displayMockResults() {
+            // Filter the mock emails based on search criteria
+            let filteredEmails = [...mockEmails];
+            
+            // Filter by sender if specified
+            if (config.senderFilter) {
+                filteredEmails = filteredEmails.filter(email => {
+                    const emailAddress = email.from.emailAddress.address.toLowerCase();
+                    const senderFilter = config.senderFilter.toLowerCase();
+                    return emailAddress.includes(senderFilter);
+                });
+            }
+            
+            // Filter by keyword if specified
+            if (config.keyword) {
+                filteredEmails = filteredEmails.filter(email => {
+                    const subject = email.subject.toLowerCase();
+                    const body = email.bodyPreview.toLowerCase();
+                    const keyword = config.keyword.toLowerCase();
+                    
+                    // If case-sensitive is enabled, use exact match
+                    if (config.caseSensitive) {
+                        return email.subject.includes(config.keyword) || 
+                               email.bodyPreview.includes(config.keyword);
+                    }
+                    
+                    return subject.includes(keyword) || body.includes(keyword);
+                });
+            }
+            
+            // Limit results if max items is specified
+            if (config.maxItems && config.maxItems > 0 && filteredEmails.length > config.maxItems) {
+                filteredEmails = filteredEmails.slice(0, config.maxItems);
+            }
+            
+            // Prepare the results object
+            const mockData = {
+                folder_name: config.useRappFast ? "RAPP, FAST folder" : "inbox",
+                folder_id: config.useRappFast ? "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwAuAAAAAACIUSZgTKHvRJHa8Gd7q0_IAQDbsGSnx95eRJU3aetDZ6MzAAAzty-9AAA=" : null,
+                sender_filter: config.senderFilter,
+                keyword: config.keyword,
+                total_messages: filteredEmails.length,
+                messages: filteredEmails
+            };
+            
+            // Display the filtered results
+            displayResults(mockData);
+        }
+
+        // Show error message
+        function showError(message) {
+            errorContainer.textContent = message;
+            errorContainer.style.display = 'block';
+            loadingElement.style.display = 'none';
+        }
+
+        // Event listeners
+        refreshBtn.addEventListener('click', loadResults);
+        
+        // Initialize the app
+        document.addEventListener('DOMContentLoaded', () => {
+            loadSavedSettings();
+            
+            // Check API status initially and periodically
+            checkApiStatus().then(isConnected => {
+                if (isConnected) {
+                    // If API is available, load results from API
+                    loadResults();
+                } else {
+                    // If API is not available, show a message
+                    errorContainer.textContent = 'API server is not available. Please start the server with: python api_server_fastapi.py';
+                    errorContainer.style.display = 'block';
+                    loadingElement.style.display = 'none';
+                }
+            });
+            
+            // Set up periodic API status check
+            setInterval(checkApiStatus, API_CONFIG.checkInterval);
+        });
+    </script>
+</body>
+</html>

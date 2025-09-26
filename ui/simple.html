@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outlook Mail Filter - Simple Version</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background-color: #0078d4;
+            color: white;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .email-card {
+            margin-bottom: 20px;
+            transition: transform 0.2s;
+        }
+        .email-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            background-color: #f0f8ff;
+            font-weight: bold;
+        }
+        .keyword-highlight {
+            background-color: #fff4b5;
+            padding: 0 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header d-flex justify-content-between align-items-center">
+            <h1>Outlook Mail Filter - Simple Version</h1>
+            <button id="refresh-btn" class="btn btn-success">
+                Refresh
+            </button>
+        </div>
+
+        <div id="status" class="alert alert-info">
+            Checking API status...
+        </div>
+
+        <div id="results-container" class="row"></div>
+    </div>
+
+    <template id="email-card-template">
+        <div class="col-md-6">
+            <div class="card email-card">
+                <div class="card-header">
+                    <span class="subject"></span>
+                </div>
+                <div class="card-body">
+                    <div class="sender mb-2"></div>
+                    <div class="date mb-2"></div>
+                    <p class="preview card-text"></p>
+                    <a href="#" class="outlook-link btn btn-primary btn-sm" target="_blank">Open in Outlook</a>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        // DOM elements
+        const statusElement = document.getElementById('status');
+        const resultsContainer = document.getElementById('results-container');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const emailCardTemplate = document.getElementById('email-card-template');
+
+        // Generate Outlook link
+        function getOutlookLink(messageId, folderId) {
+            const cleanMessageId = encodeURIComponent(messageId);
+            
+            if (folderId) {
+                const cleanFolderId = encodeURIComponent(folderId);
+                return `https://outlook.office365.com/mail/deeplink/readmessage?itemid=${cleanMessageId}&folderid=${cleanFolderId}`;
+            } else {
+                return `https://outlook.office365.com/mail/deeplink/readmessage?itemid=${cleanMessageId}`;
+            }
+        }
+
+        // Create email card
+        function createEmailCard(message, folderId) {
+            const template = emailCardTemplate.content.cloneNode(true);
+            
+            // Set subject
+            template.querySelector('.subject').textContent = message.subject || 'No subject';
+            
+            // Set sender
+            let sender = 'Unknown sender';
+            if (message.from && message.from.emailAddress) {
+                sender = message.from.emailAddress.address || 'Unknown sender';
+            }
+            template.querySelector('.sender').textContent = `From: ${sender}`;
+            
+            // Set date
+            const date = new Date(message.receivedDateTime).toLocaleString();
+            template.querySelector('.date').textContent = `Received: ${date}`;
+            
+            // Set preview
+            const preview = message.bodyPreview || 'No preview available';
+            template.querySelector('.preview').textContent = preview;
+            
+            // Set Outlook link
+            const outlookLink = getOutlookLink(message.id, folderId);
+            template.querySelector('.outlook-link').href = outlookLink;
+            
+            return template;
+        }
+
+        // Display emails
+        function displayEmails(data) {
+            // Clear results container
+            resultsContainer.innerHTML = '';
+            
+            // Update status
+            statusElement.textContent = `Found ${data.messages.length} emails matching "${data.keyword}" from ${data.sender_filter}`;
+            
+            // Create email cards
+            data.messages.forEach(message => {
+                const card = createEmailCard(message, data.folder_id);
+                resultsContainer.appendChild(card);
+            });
+        }
+
+        // Fetch emails from API
+        async function fetchEmails() {
+            statusElement.textContent = 'Loading emails...';
+            
+            try {
+                // Simple version - hardcoded API URL
+                const response = await fetch('http://127.0.0.1:8000/api/emails');
+                
+                if (!response.ok) {
+                    throw new Error(`API returned status ${response.status}`);
+                }
+                
+                const data = await response.json();
+                displayEmails(data);
+                
+            } catch (error) {
+                console.error('Error fetching emails:', error);
+                statusElement.textContent = `Error: ${error.message}`;
+                statusElement.className = 'alert alert-danger';
+                
+                // Display mock data as fallback
+                const mockData = {
+                    folder_name: "RAPP, FAST folder",
+                    folder_id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwAuAAAAAACIUSZgTKHvRJHa8Gd7q0_IAQDbsGSnx95eRJU3aetDZ6MzAAAzty-9AAA=",
+                    sender_filter: "FASTRAPP@paypal.com",
+                    keyword: "failed",
+                    total_messages: 1,
+                    messages: [
+                        {
+                            id: "AAMkADA5MDcxMmI4LWQyMWQtNGE5My1hZGVlLTg1ODU4OTI0NzIyNwBGAAAAAAD2bnMnddFDQK5rBFWpQjVuBwDbsGSnx95eRJU3aetDZ6MzAAAAAAEMAADbsGSnx95eRJU3aetDZ6MzAAAz1J3dAAA=",
+                            subject: "FALLBACK: API connection failed",
+                            bodyPreview: "This is fallback data because the API connection failed. Please check that the API server is running at http://127.0.0.1:8000",
+                            receivedDateTime: new Date().toISOString(),
+                            from: {
+                                emailAddress: {
+                                    address: "system@example.com",
+                                    name: "System Notification"
+                                }
+                            }
+                        }
+                    ]
+                };
+                
+                // Display fallback data
+                statusElement.textContent += ' (Using fallback data)';
+                displayEmails(mockData);
+            }
+        }
+
+        // Event listeners
+        refreshBtn.addEventListener('click', fetchEmails);
+
+        // Initialize the app
+        document.addEventListener('DOMContentLoaded', fetchEmails);
+    </script>
+</body>
+</html>
